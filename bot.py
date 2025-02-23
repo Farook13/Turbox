@@ -6,14 +6,14 @@ from telegram import Update
 from telegram.ext import CallbackContext
 
 # Configuration
-BOT_TOKEN = "YOUR_BOT_TOKEN"  # Replace with your bot token from BotFather
+BOT_TOKEN = "7864220829:AAEfS005GxgrvHsNLXoIB7U4X8rmPZyCtwg"  # Replace with your bot token from BotFather
 CHANNELS = [
-    "@ChannelOne",      # First use
-    "@ChannelTwo",      # After 5 attempts
-    "@ChannelThree",    # After 15 attempts
-    "@ChannelFour"      # After 20 attempts
+    "@subtounlock1",      # First use
+    "@subtounlock2",      # After 5 attempts
+    "@subtounlock3",    # After 15 attempts
+    "@subtounlock4"      # After 20 attempts
 ]
-ADMIN_ID = YOUR_ADMIN_ID  # Replace with your Telegram user ID (integer)
+ADMIN_ID = 5032034594  # Replace with your Telegram user ID (integer)
 
 # User tracking (in-memory, use a database for persistence)
 user_attempts = {}
