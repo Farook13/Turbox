@@ -1,23 +1,27 @@
+import os
 import telegram
 from telegram.ext import Updater, CommandHandler, MessageHandler, Filters
 import requests
 import re
+import sqlite3
+import logging
 from telegram import Update
 from telegram.ext import CallbackContext
 
-# Configuration
-BOT_TOKEN = "7864220829:AAEfS005GxgrvHsNLXoIB7U4X8rmPZyCtwg"  # Replace with your bot token from BotFather
-CHANNELS = [
-    "@subtounlock1",      # First use
-    "@subtounlock2",      # After 5 attempts
-    "@subtounlock3",    # After 15 attempts
-    "@subtounlock4"      # After 20 attempts
-]
-ADMIN_ID = 5032034594  # Replace with your Telegram user ID (integer)
+# Set up logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-# User tracking (in-memory, use a database for persistence)
-user_attempts = {}
-user_channel_progress = {}  # Tracks which channel the user must join next
+# Configuration from environment variables
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "7864220829:AAEfS005GxgrvHsNLXoIB7U4X8rmPZyCtwg")
+CHANNELS = os.environ.get("CHANNELS", "@subtounlock1,@subtounlock2,@subtounlock3,@subtounlock4").split(",")
+ADMIN_ID = int(os.environ.get("ADMIN_ID", "5032034594"))
+
+# SQLite setup for persistent storage
+conn = sqlite3.connect("users.db", check_same_thread=False)
+cursor = conn.cursor()
+cursor.execute("CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY, attempts INTEGER, channel_index INTEGER)")
+conn.commit()
 
 # Check if user is subscribed to a specific channel
 def check_subscription(update: Update, context: CallbackContext, channel: str) -> bool:
@@ -26,44 +30,58 @@ def check_subscription(update: Update, context: CallbackContext, channel: str) -
         member = context.bot.get_chat_member(channel, user_id)
         return member.status in ["member", "administrator", "creator"]
     except telegram.error.BadRequest:
+        logger.warning(f"User {user_id} not found in {channel}")
         return False
 
-# Simulate TeraBox link processing (replace with actual API/logic if available)
+# Process TeraBox link (placeholder, replace with actual logic if available)
 def get_terabox_download_link(terabox_url):
-    # Placeholder: In a real scenario, use TeraBox API or scrape the link
     try:
-        if "terabox.com" not in terabox_url and "terabox.app" not in terabox_url:
+        if not ("terabox.com" in terabox_url or "terabox.app" in terabox_url):
             return None
-        response = requests.get(terabox_url, allow_redirects=True)
-        return response.url if response.status_code == 200 else None
-    except Exception:
+        response = requests.get(terabox_url, allow_redirects=True, timeout=10)
+        if response.status_code == 200:
+            return response.url
+        logger.error(f"Failed to fetch TeraBox URL: {response.status_code}")
         return None
+    except Exception as e:
+        logger.error(f"Error processing TeraBox link: {e}")
+        return None
+
+# Load or initialize user data from SQLite
+def get_user_data(user_id):
+    cursor.execute("SELECT attempts, channel_index FROM users WHERE id = ?", (user_id,))
+    result = cursor.fetchone()
+    if result:
+        return result[0], result[1]  # attempts, channel_index
+    else:
+        cursor.execute("INSERT INTO users (id, attempts, channel_index) VALUES (?, 0, 0)", (user_id,))
+        conn.commit()
+        return 0, 0
+
+# Update user data in SQLite
+def update_user_data(user_id, attempts, channel_index):
+    cursor.execute("UPDATE users SET attempts = ?, channel_index = ? WHERE id = ?", (attempts, channel_index, user_id))
+    conn.commit()
 
 # Start command
 def start(update: Update, context: CallbackContext):
     user_id = update.message.from_user.id
-    if user_id not in user_attempts:
-        user_attempts[user_id] = 0
-        user_channel_progress[user_id] = 0  # Start with first channel
-
+    attempts, channel_index = get_user_data(user_id)
+    
     update.message.reply_text(
         "Welcome to the TeraBox Downloader Bot!\n"
         "Please subscribe to our first channel: " + CHANNELS[0] + "\n"
         "Then send a TeraBox link to download."
     )
+    logger.info(f"User {user_id} started the bot")
 
 # Handle TeraBox link
 def handle_link(update: Update, context: CallbackContext):
     user_id = update.message.from_user.id
     message_text = update.message.text
 
-    # Initialize user data if not present
-    if user_id not in user_attempts:
-        user_attempts[user_id] = 0
-        user_channel_progress[user_id] = 0
-
-    attempts = user_attempts[user_id]
-    channel_index = user_channel_progress[user_id]
+    # Load user data
+    attempts, channel_index = get_user_data(user_id)
     required_channel = CHANNELS[channel_index]
 
     # Determine the next channel requirement based on attempts
@@ -85,12 +103,14 @@ def handle_link(update: Update, context: CallbackContext):
             f"You need to join {required_channel} to continue.\n"
             f"Attempts: {attempts}. Join now and try again!"
         )
-        user_channel_progress[user_id] = channel_index  # Update required channel
+        update_user_data(user_id, attempts, channel_index)
+        logger.info(f"User {user_id} needs to join {required_channel}, attempts: {attempts}")
         return
 
     # Validate and process TeraBox link
     if not re.match(r"https?://(www\.)?(terabox\.com|terabox\.app)/.*", message_text):
         update.message.reply_text("Please send a valid TeraBox link.")
+        logger.warning(f"User {user_id} sent invalid link: {message_text}")
         return
 
     update.message.reply_text("Processing your TeraBox link...")
@@ -98,24 +118,31 @@ def handle_link(update: Update, context: CallbackContext):
 
     if download_link:
         update.message.reply_text(f"Here’s your download link:\n{download_link}")
+        logger.info(f"User {user_id} received download link: {download_link}")
     else:
         update.message.reply_text("Sorry, couldn’t generate a download link. Check the URL and try again.")
+        logger.error(f"User {user_id} failed to get download link for: {message_text}")
 
-    # Increment attempts
-    user_attempts[user_id] += 1
+    # Increment attempts and update database
+    attempts += 1
+    update_user_data(user_id, attempts, channel_index)
 
 # Main function to run the bot
 def main():
-    updater = Updater(BOT_TOKEN, use_context=True)
-    dp = updater.dispatcher
+    logger.info("Starting bot...")
+    try:
+        updater = Updater(BOT_TOKEN, use_context=True)
+        dp = updater.dispatcher
 
-    # Handlers
-    dp.add_handler(CommandHandler("start", start))
-    dp.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_link))
+        # Handlers
+        dp.add_handler(CommandHandler("start", start))
+        dp.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_link))
 
-    # Start the bot
-    updater.start_polling()
-    updater.idle()
+        # Start the bot
+        updater.start_polling()
+        updater.idle()
+    except Exception as e:
+        logger.error(f"Bot failed to start: {e}")
 
 if __name__ == "__main__":
     main()
